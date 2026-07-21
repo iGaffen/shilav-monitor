@@ -1,0 +1,34 @@
+# shilav-monitor
+
+בודק כל 30 דקות אם העמוד [lp.vp4.me/jzze](https://lp.vp4.me/jzze) עבר ממצב "סגור" (המחרוזת
+"המלאי אזל" קיימת בעמוד) למצב "פתוח" (המחרוזת לא נמצאת), ושולח התראת טלגרם רק בשינוי הזה.
+
+זהו כלי ניטור פסיבי בלבד: GET רגיל עם headers סטנדרטיים, בלי scraping אגרסיבי ובלי כל ניסיון
+לעקוף חסימות.
+
+## איך זה עובד
+
+- `monitor.py` — מבצע GET לעמוד, בודק את קיום המחרוזת, משווה למצב הקודם ב-`state.json`, ושולח
+  הודעת טלגרם רק כשהמעבר הוא closed → open.
+- `state.json` — מצב אחרון (`open`/`closed`), מתעדכן אוטומטית ע"י ה-workflow.
+- `.github/workflows/monitor.yml` — מריץ את הסקריפט כל 30 דקות (cron) ומבצע commit ל-`state.json`
+  אם הוא השתנה.
+
+## הגדרת Secrets (חובה לפני ההרצה הראשונה)
+
+ב-GitHub, בתוך ה-repo:
+
+1. עברו ל-**Settings** → **Secrets and variables** → **Actions**.
+2. לחצו **New repository secret**.
+3. הוסיפו secret בשם `TELEGRAM_BOT_TOKEN` עם ערך הטוקן של הבוט.
+4. לחצו שוב **New repository secret**.
+5. הוסיפו secret בשם `TELEGRAM_CHAT_ID` עם ה-chat id שלכם.
+
+הסקריפט קורא אותם אך ורק דרך משתני סביבה (`os.environ["TELEGRAM_BOT_TOKEN"]` /
+`os.environ["TELEGRAM_CHAT_ID"]`) שמוזרקים ע"י ה-workflow מתוך ה-Secrets — הם לא כתובים בקוד
+ולא נשמרים בשום קובץ ב-repo.
+
+## הרצה ידנית
+
+ניתן להריץ את ה-workflow באופן ידני מהלשונית **Actions** → **Monitor Shilav page** →
+**Run workflow**.
