@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -23,16 +24,22 @@ HEADERS = {
 }
 
 
-def load_state() -> str:
+def load_state() -> dict:
     if STATE_FILE.exists():
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return data.get("status", "closed")
-    return "closed"
+        data.setdefault("status", "closed")
+        data.setdefault("last_heartbeat_date", None)
+        return data
+    return {"status": "closed", "last_heartbeat_date": None}
 
 
-def save_state(status: str) -> None:
+def save_state(status: str, last_heartbeat_date: str) -> None:
     STATE_FILE.write_text(
-        json.dumps({"status": status}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"status": status, "last_heartbeat_date": last_heartbeat_date},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -52,7 +59,11 @@ def send_telegram_message(text: str) -> None:
 
 
 def main() -> None:
-    previous_status = load_state()
+    state = load_state()
+    previous_status = state["status"]
+    last_heartbeat_date = state["last_heartbeat_date"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     current_status = fetch_current_status()
 
     print(f"previous={previous_status} current={current_status}")
@@ -61,9 +72,17 @@ def main() -> None:
         send_telegram_message("🔔 העמוד של שילב נפתח להזמנה! https://lp.vp4.me/jzze")
         print("Telegram notification sent.")
 
-    if current_status != previous_status:
-        save_state(current_status)
-        print(f"State updated: {previous_status} -> {current_status}")
+    if last_heartbeat_date != today:
+        status_hebrew = "פתוח" if current_status == "open" else "סגור"
+        send_telegram_message(
+            f"✅ בדיקה יומית: העמוד נבדק ותקין, המצב הנוכחי: {status_hebrew}."
+        )
+        last_heartbeat_date = today
+        print("Daily heartbeat sent.")
+
+    if current_status != previous_status or last_heartbeat_date != state["last_heartbeat_date"]:
+        save_state(current_status, last_heartbeat_date)
+        print(f"State saved: status={current_status} last_heartbeat_date={last_heartbeat_date}")
     else:
         print("No state change.")
 
