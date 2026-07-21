@@ -10,6 +10,7 @@ import requests
 URL = "https://lp.vp4.me/jzze"
 CLOSED_MARKER = "המלאי אזל"
 STATE_FILE = Path(__file__).parent / "state.json"
+FAILURE_ALERT_THRESHOLD = 3  # consecutive failed checks before alerting
 
 HEADERS = {
     "User-Agent": (
@@ -23,31 +24,38 @@ HEADERS = {
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
+DEFAULT_STATE = {
+    "status": "closed",
+    "last_heartbeat_date": None,
+    "consecutive_failures": 0,
+    "failure_alert_sent": False,
+    "redirect_detected": False,
+}
+
 
 def load_state() -> dict:
     if STATE_FILE.exists():
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        data.setdefault("status", "closed")
-        data.setdefault("last_heartbeat_date", None)
+        for key, value in DEFAULT_STATE.items():
+            data.setdefault(key, value)
         return data
-    return {"status": "closed", "last_heartbeat_date": None}
+    return dict(DEFAULT_STATE)
 
 
-def save_state(status: str, last_heartbeat_date: str) -> None:
+def save_state(state: dict) -> None:
     STATE_FILE.write_text(
-        json.dumps(
-            {"status": status, "last_heartbeat_date": last_heartbeat_date},
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(state, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def fetch_current_status() -> str:
-    resp = requests.get(URL, headers=HEADERS, timeout=30)
+def fetch_page() -> tuple[str, bool]:
+    """Return (status, redirected) for the monitored page."""
+    resp = requests.get(URL, headers=HEADERS, timeout=30, allow_redirects=True)
     resp.raise_for_status()
-    return "closed" if CLOSED_MARKER in resp.text else "open"
+    redirected = resp.url.rstrip("/") != URL.rstrip("/")
+    status = "closed" if CLOSED_MARKER in resp.text else "open"
+    return status, redirected
 
 
 def send_telegram_message(text: str) -> None:
@@ -60,31 +68,61 @@ def send_telegram_message(text: str) -> None:
 
 def main() -> None:
     state = load_state()
+
+    try:
+        current_status, redirected = fetch_page()
+    except requests.RequestException as exc:
+        state["consecutive_failures"] += 1
+        print(f"Check failed ({state['consecutive_failures']} in a row): {exc}", file=sys.stderr)
+
+        if (
+            state["consecutive_failures"] >= FAILURE_ALERT_THRESHOLD
+            and not state["failure_alert_sent"]
+        ):
+            send_telegram_message(
+                "⚠️ הבדיקה של עמוד שילב נכשלה "
+                f"{state['consecutive_failures']} פעמים ברצף. "
+                "יכול להיות שהמערכת תקועה - כדאי לבדוק ידנית."
+            )
+            state["failure_alert_sent"] = True
+
+        save_state(state)
+        sys.exit(1)
+
     previous_status = state["status"]
-    last_heartbeat_date = state["last_heartbeat_date"]
+    was_redirected_before = state["redirect_detected"]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    current_status = fetch_current_status()
+    print(f"previous={previous_status} current={current_status} redirected={redirected}")
 
-    print(f"previous={previous_status} current={current_status}")
+    # Recovered after previous failures.
+    if state["consecutive_failures"] > 0:
+        print(f"Recovered after {state['consecutive_failures']} failed check(s).")
+    state["consecutive_failures"] = 0
+    state["failure_alert_sent"] = False
+
+    if redirected and not was_redirected_before:
+        send_telegram_message(
+            "🚨 שינוי חשוד: הבקשה לעמוד שילב הופנתה (redirect) לכתובת אחרת! "
+            "יכול להיות שהם הפעילו את הרכישה. https://lp.vp4.me/jzze"
+        )
+        print("Redirect notification sent.")
+    state["redirect_detected"] = redirected
 
     if previous_status == "closed" and current_status == "open":
         send_telegram_message("🔔 העמוד של שילב נפתח להזמנה! https://lp.vp4.me/jzze")
         print("Telegram notification sent.")
+    state["status"] = current_status
 
-    if last_heartbeat_date != today:
+    if state["last_heartbeat_date"] != today:
         status_hebrew = "פתוח" if current_status == "open" else "סגור"
         send_telegram_message(
             f"✅ בדיקה יומית: העמוד נבדק ותקין, המצב הנוכחי: {status_hebrew}."
         )
-        last_heartbeat_date = today
+        state["last_heartbeat_date"] = today
         print("Daily heartbeat sent.")
 
-    if current_status != previous_status or last_heartbeat_date != state["last_heartbeat_date"]:
-        save_state(current_status, last_heartbeat_date)
-        print(f"State saved: status={current_status} last_heartbeat_date={last_heartbeat_date}")
-    else:
-        print("No state change.")
+    save_state(state)
 
 
 if __name__ == "__main__":
