@@ -2,8 +2,10 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -22,6 +24,8 @@ HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 DEFAULT_STATE = {
@@ -50,10 +54,25 @@ def save_state(state: dict) -> None:
 
 
 def fetch_page() -> tuple[str, bool]:
-    """Return (status, redirected) for the monitored page."""
-    resp = requests.get(URL, headers=HEADERS, timeout=30, allow_redirects=True)
+    """Return (status, redirected) for the monitored page.
+
+    Adds a cache-busting query param alongside the no-cache headers so any CDN
+    or proxy in front of the page can't serve a stale, previously cached copy.
+    """
+    cache_buster = {"_": str(int(time.time()))}
+    resp = requests.get(URL, headers=HEADERS, params=cache_buster, timeout=30, allow_redirects=True)
     resp.raise_for_status()
-    redirected = resp.url.rstrip("/") != URL.rstrip("/")
+
+    # Compare only scheme/host/path (ignoring query strings, including our own
+    # cache-buster) so a real redirect is detected without false positives.
+    final = urlsplit(resp.url)
+    original = urlsplit(URL)
+    redirected = (final.scheme, final.netloc, final.path.rstrip("/")) != (
+        original.scheme,
+        original.netloc,
+        original.path.rstrip("/"),
+    )
+
     status = "closed" if CLOSED_MARKER in resp.text else "open"
     return status, redirected
 
