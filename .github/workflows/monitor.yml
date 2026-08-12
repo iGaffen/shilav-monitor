@@ -2,11 +2,14 @@ name: Monitor Shilav page
 
 on:
   schedule:
-    # Runs 07:00-23:00 Israel time. Cron is UTC-only, so hours 4-19 assume
-    # IDT (UTC+3, Israel's summer DST). Shift both hour bounds by 1 after
-    # Israel's DST changes (roughly late Oct and late Mar) to keep the same
-    # local window.
-    - cron: "2,12,22,32,42,52 4-19 * * *"
+    # Hourly fallback safety net only. The primary 10-minute cadence is driven
+    # externally (cron-job.org calling the workflow_dispatch API below) since
+    # GitHub's own `schedule` trigger is unreliably delayed at high frequency.
+    # This keeps checks/heartbeat alive even if the external trigger fails.
+    # Runs 07:00-23:00 Israel time; hours 4-19 assume IDT (UTC+3, Israel's
+    # summer DST) — shift both bounds by 1 after Israel's DST changes (roughly
+    # late Oct and late Mar) to keep the same local window.
+    - cron: "27 4-19 * * *"
   workflow_dispatch: {}
 
 permissions:
