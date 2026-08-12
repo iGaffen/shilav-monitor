@@ -2,7 +2,11 @@ name: Monitor Shilav page
 
 on:
   schedule:
-    - cron: "2,12,22,32,42,52 * * * *"
+    # Runs 07:00-23:00 Israel time. Cron is UTC-only, so hours 4-19 assume
+    # IDT (UTC+3, Israel's summer DST). Shift both hour bounds by 1 after
+    # Israel's DST changes (roughly late Oct and late Mar) to keep the same
+    # local window.
+    - cron: "2,12,22,32,42,52 4-19 * * *"
   workflow_dispatch: {}
 
 permissions:
