@@ -14,6 +14,14 @@ CLOSED_MARKER = "המלאי אזל"
 STATE_FILE = Path(__file__).parent / "state.json"
 FAILURE_ALERT_THRESHOLD = 3  # consecutive failed checks before alerting
 
+# Below CADENCE_MIN_GAP_MINUTES is normal jitter between checks. Above
+# CADENCE_MAX_GAP_MINUTES is treated as the expected overnight gap (the
+# workflow only runs 07:00-23:00 Israel time) rather than a stuck trigger.
+# In between means the external cron-job.org trigger has likely stopped and
+# only GitHub's hourly fallback schedule is still running.
+CADENCE_MIN_GAP_MINUTES = 40
+CADENCE_MAX_GAP_MINUTES = 300
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -34,6 +42,8 @@ DEFAULT_STATE = {
     "consecutive_failures": 0,
     "failure_alert_sent": False,
     "redirect_detected": False,
+    "last_run_at": None,
+    "cadence_alert_sent": False,
 }
 
 
@@ -77,6 +87,30 @@ def fetch_page() -> tuple[str, bool]:
     return status, redirected
 
 
+def check_cadence(state: dict, now: datetime) -> None:
+    """Alert if checks have slowed down (the external trigger likely died)
+    without touching consecutive_failures, since the checks themselves may
+    still be succeeding via GitHub's hourly fallback schedule."""
+    last_run_at = state["last_run_at"]
+    if last_run_at is None:
+        return
+
+    gap_minutes = (now - datetime.fromisoformat(last_run_at)).total_seconds() / 60
+
+    if CADENCE_MIN_GAP_MINUTES < gap_minutes < CADENCE_MAX_GAP_MINUTES:
+        if not state["cadence_alert_sent"]:
+            send_telegram_message(
+                "⚠️ הבדיקות מאטות: עברו "
+                f"{gap_minutes:.0f} דקות מאז הבדיקה הקודמת (רגיל: כל 10-15 דק'). "
+                "כנראה שהטריגר החיצוני מ-cron-job.org הפסיק לעבוד, וכרגע רצה רק "
+                "רשת הביטחון השעתית של GitHub. כדאי לבדוק את ה-cron job שם."
+            )
+            state["cadence_alert_sent"] = True
+            print(f"Cadence alert sent (gap={gap_minutes:.0f} min).")
+    else:
+        state["cadence_alert_sent"] = False
+
+
 def send_telegram_message(text: str) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
@@ -87,6 +121,10 @@ def send_telegram_message(text: str) -> None:
 
 def main() -> None:
     state = load_state()
+    now = datetime.now(timezone.utc)
+
+    check_cadence(state, now)
+    state["last_run_at"] = now.isoformat()
 
     try:
         current_status, redirected = fetch_page()
@@ -110,7 +148,7 @@ def main() -> None:
 
     previous_status = state["status"]
     was_redirected_before = state["redirect_detected"]
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = now.strftime("%Y-%m-%d")
 
     print(f"previous={previous_status} current={current_status} redirected={redirected}")
 
