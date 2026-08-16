@@ -43,7 +43,32 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add state.json
             git commit -m "Update state.json"
-            git push
+
+            # Runs can overlap (the external 10-minute trigger and GitHub's
+            # hourly schedule fallback), so two runs can race to push at
+            # nearly the same time. Retry with a rebase on a non-fast-forward
+            # rejection instead of failing the whole job over a push race.
+            for attempt in 1 2 3 4 5; do
+              if git push; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "git push failed after $attempt attempts" >&2
+                exit 1
+              fi
+              echo "Push rejected (attempt $attempt), pulling --rebase and retrying..."
+              git pull --rebase origin main
+            done
           else
             echo "No state change to commit."
           fi
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ ריצת ה-workflow של ניטור שילב נכשלה (run #${{ github.run_number }}). כדאי לבדוק את הלוג ב-Actions: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
