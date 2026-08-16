@@ -1,6 +1,9 @@
 """Monitor lp.vp4.me/jzze for a change from 'closed' to 'open' and notify via Telegram."""
+import difflib
+import html as html_lib
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -13,6 +16,14 @@ URL = "https://lp.vp4.me/jzze"
 CLOSED_MARKER = "המלאי אזל"
 STATE_FILE = Path(__file__).parent / "state.json"
 FAILURE_ALERT_THRESHOLD = 3  # consecutive failed checks before alerting
+CONTENT_DIFF_MAX_LINES = 40  # cap the diff included in a change-alert message
+
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_LINK_RE = re.compile(r'<a\b[^>]*\bhref=["\']([^"\']+)["\']', re.IGNORECASE)
+_IMG_RE = re.compile(r'<img\b[^>]*\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
+_WHITESPACE_RE = re.compile(r"\s+")
 
 # Below CADENCE_MIN_GAP_MINUTES is normal jitter between checks. Above
 # CADENCE_MAX_GAP_MINUTES is treated as the expected overnight gap (the
@@ -44,6 +55,7 @@ DEFAULT_STATE = {
     "redirect_detected": False,
     "last_run_at": None,
     "cadence_alert_sent": False,
+    "content_snapshot": None,
 }
 
 
@@ -63,8 +75,39 @@ def save_state(state: dict) -> None:
     )
 
 
-def fetch_page() -> tuple[str, bool]:
-    """Return (status, redirected) for the monitored page.
+def extract_content_snapshot(page_html: str) -> str:
+    """Build a normalized, diff-friendly snapshot of the page's visible content:
+    text, link targets, and image sources, each independently sorted/deduped.
+
+    Scripts, styles, and comments are stripped first so markup/analytics noise
+    (nonces, cache-busted script tags, tracking pixels, etc.) doesn't cause
+    false-positive change alerts on every run. Text lines are kept as their own
+    entries (rather than one giant blob) so the diff shown in an alert points
+    at the specific line that changed.
+    """
+    cleaned = _COMMENT_RE.sub("", page_html)
+    cleaned = _SCRIPT_STYLE_RE.sub("", cleaned)
+
+    links = sorted(set(_LINK_RE.findall(cleaned)))
+    images = sorted(set(_IMG_RE.findall(cleaned)))
+
+    text = _TAG_RE.sub("\n", cleaned)
+    text = html_lib.unescape(text)
+    text_lines = sorted({
+        _WHITESPACE_RE.sub(" ", line).strip()
+        for line in text.splitlines()
+        if line.strip()
+    })
+
+    return "\n".join([
+        "TEXT:", *text_lines,
+        "LINKS:", *links,
+        "IMAGES:", *images,
+    ])
+
+
+def fetch_page() -> tuple[str, bool, str]:
+    """Return (status, redirected, content_snapshot) for the monitored page.
 
     Adds a cache-busting query param alongside the no-cache headers so any CDN
     or proxy in front of the page can't serve a stale, previously cached copy.
@@ -84,7 +127,7 @@ def fetch_page() -> tuple[str, bool]:
     )
 
     status = "closed" if CLOSED_MARKER in resp.text else "open"
-    return status, redirected
+    return status, redirected, extract_content_snapshot(resp.text)
 
 
 def check_cadence(state: dict, now: datetime) -> None:
@@ -127,7 +170,7 @@ def main() -> None:
     state["last_run_at"] = now.isoformat()
 
     try:
-        current_status, redirected = fetch_page()
+        current_status, redirected, content_snapshot = fetch_page()
     except requests.RequestException as exc:
         state["consecutive_failures"] += 1
         print(f"Check failed ({state['consecutive_failures']} in a row): {exc}", file=sys.stderr)
@@ -148,6 +191,7 @@ def main() -> None:
 
     previous_status = state["status"]
     was_redirected_before = state["redirect_detected"]
+    previous_snapshot = state["content_snapshot"]
     today = now.strftime("%Y-%m-%d")
 
     print(f"previous={previous_status} current={current_status} redirected={redirected}")
@@ -165,6 +209,30 @@ def main() -> None:
         )
         print("Redirect notification sent.")
     state["redirect_detected"] = redirected
+
+    # Any change in visible text, links, or images since the last run - not
+    # just the closed/open marker - is worth a look.
+    if previous_snapshot is not None and content_snapshot != previous_snapshot:
+        diff_lines = list(difflib.unified_diff(
+            previous_snapshot.splitlines(),
+            content_snapshot.splitlines(),
+            lineterm="",
+            n=0,
+        ))
+        shown = diff_lines[:CONTENT_DIFF_MAX_LINES]
+        diff_text = "\n".join(shown)
+        if len(diff_lines) > CONTENT_DIFF_MAX_LINES:
+            diff_text += f"\n... ועוד {len(diff_lines) - CONTENT_DIFF_MAX_LINES} שורות שינוי"
+        # Telegram caps messages at 4096 characters; a handful of long text
+        # lines could exceed that even within CONTENT_DIFF_MAX_LINES.
+        if len(diff_text) > 3500:
+            diff_text = diff_text[:3500] + "\n... (הודעה קוצרה)"
+        send_telegram_message(
+            "🔎 זוהה שינוי בתוכן העמוד של שילב (טקסט/קישורים/תמונות) - כדאי לבדוק ידנית: "
+            f"https://lp.vp4.me/jzze\n\n{diff_text}"
+        )
+        print("Content-change notification sent.")
+    state["content_snapshot"] = content_snapshot
 
     if previous_status == "closed" and current_status == "open":
         send_telegram_message("🔔 העמוד של שילב נפתח להזמנה! https://lp.vp4.me/jzze")
