@@ -4,6 +4,6 @@
   "consecutive_failures": 0,
   "failure_alert_sent": false,
   "redirect_detected": false,
-  "last_run_at": "2026-09-22T09:23:39.031825+00:00",
-  "cadence_alert_sent": false
+  "last_run_at": "2026-09-22T14:05:57.569035+00:00",
+  "cadence_alert_sent": true
 }
