@@ -1,9 +1,9 @@
 {
   "status": "closed",
-  "last_heartbeat_date": "2026-09-24",
+  "last_heartbeat_date": "2026-09-25",
   "consecutive_failures": 0,
   "failure_alert_sent": false,
   "redirect_detected": false,
-  "last_run_at": "2026-09-24T22:34:10.663537+00:00",
-  "cadence_alert_sent": true
+  "last_run_at": "2026-09-25T09:41:54.968098+00:00",
+  "cadence_alert_sent": false
 }
