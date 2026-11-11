@@ -6,10 +6,10 @@ on:
     # externally (cron-job.org calling the workflow_dispatch API below) since
     # GitHub's own `schedule` trigger is unreliably delayed at high frequency.
     # This keeps checks/heartbeat alive even if the external trigger fails.
-    # Runs 07:00-23:00 Israel time; hours 4-19 assume IDT (UTC+3, Israel's
-    # summer DST) — shift both bounds by 1 after Israel's DST changes (roughly
-    # late Oct and late Mar) to keep the same local window.
-    - cron: "27 4-19 * * *"
+    # Runs 07:00-23:00 Israel time; hours 5-20 assume IST (UTC+2, Israel's
+    # winter time). Shift both bounds back to 4-19 when Israel moves to summer
+    # time (IDT, UTC+3) in late March, and forward again in late October.
+    - cron: "27 5-20 * * *"
   workflow_dispatch: {}
 
 permissions:
