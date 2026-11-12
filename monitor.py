@@ -1,5 +1,6 @@
 """Monitor Shilav pages for a change from 'closed' to 'open' and notify via Telegram."""
 import json
+import re
 import os
 import sys
 import time
@@ -16,7 +17,14 @@ URLS = [
     "https://lp.vp4.me/waxf",
 ]
 ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
-CLOSED_MARKER = "המלאי אזל"
+# Text that means a page is closed. A page also counts as closed when it is
+# blank (almost no visible text), so an emptied page is "not active" and only
+# a page with real content and none of these markers counts as open.
+CLOSED_MARKERS = [
+    "המלאי אזל",
+    "הערכה טרם חזרה לסניפים",
+]
+MIN_VISIBLE_TEXT_CHARS = 50
 STATE_FILE = Path(__file__).parent / "state.json"
 FAILURE_ALERT_THRESHOLD = 3  # consecutive failed checks before alerting
 
@@ -78,6 +86,18 @@ def save_state(state: dict) -> None:
     )
 
 
+def visible_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", html)
+    return " ".join(text.split())
+
+
+def is_closed(html: str) -> bool:
+    if any(marker in html for marker in CLOSED_MARKERS):
+        return True
+    return len(visible_text(html)) < MIN_VISIBLE_TEXT_CHARS
+
+
 def fetch_page(url: str) -> tuple[str, bool]:
     """Return (status, redirected) for the monitored page.
 
@@ -98,7 +118,7 @@ def fetch_page(url: str) -> tuple[str, bool]:
         original.path.rstrip("/"),
     )
 
-    status = "closed" if CLOSED_MARKER in resp.text else "open"
+    status = "closed" if is_closed(resp.text) else "open"
     return status, redirected
 
 
