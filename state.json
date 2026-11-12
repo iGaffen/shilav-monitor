@@ -1,9 +1,17 @@
 {
-  "status": "open",
   "last_heartbeat_date": "2026-11-12",
   "consecutive_failures": 0,
   "failure_alert_sent": false,
-  "redirect_detected": false,
   "last_run_at": "2026-11-12T06:15:46.611104+00:00",
-  "cadence_alert_sent": false
+  "cadence_alert_sent": false,
+  "pages": {
+    "https://lp.vp4.me/jzze": {
+      "status": "closed",
+      "redirect_detected": false
+    },
+    "https://lp.vp4.me/waxf": {
+      "status": "closed",
+      "redirect_detected": false
+    }
+  }
 }
