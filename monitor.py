@@ -1,26 +1,29 @@
-"""Monitor lp.vp4.me/jzze for a change from 'closed' to 'open' and notify via Telegram."""
+"""Monitor Shilav pages for a change from 'closed' to 'open' and notify via Telegram."""
 import json
 import os
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 
 import requests
 
-URL = "https://lp.vp4.me/jzze"
+# Pages to monitor. Add a URL here to monitor another page.
+URLS = [
+    "https://lp.vp4.me/jzze",
+    "https://lp.vp4.me/waxf",
+]
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 CLOSED_MARKER = "המלאי אזל"
 STATE_FILE = Path(__file__).parent / "state.json"
 FAILURE_ALERT_THRESHOLD = 3  # consecutive failed checks before alerting
 
-# Below CADENCE_MIN_GAP_MINUTES is normal jitter between checks. Above
-# CADENCE_MAX_GAP_MINUTES is treated as the expected overnight gap (the
-# workflow only runs 07:00-23:00 Israel time) rather than a stuck trigger.
-# In between means the external cron-job.org trigger has likely stopped and
-# only GitHub's hourly fallback schedule is still running.
+# A gap above CADENCE_MIN_GAP_MINUTES between two runs on the same Israel
+# calendar day means the external cron-job.org trigger has likely stopped.
+# (The overnight pause always crosses midnight, so it never triggers this.)
 CADENCE_MIN_GAP_MINUTES = 40
-CADENCE_MAX_GAP_MINUTES = 300
 
 HEADERS = {
     "User-Agent": (
@@ -36,12 +39,13 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
+DEFAULT_PAGE_STATE = {"status": "closed", "redirect_detected": False}
+
 DEFAULT_STATE = {
-    "status": "closed",
+    "pages": {},
     "last_heartbeat_date": None,
     "consecutive_failures": 0,
     "failure_alert_sent": False,
-    "redirect_detected": False,
     "last_run_at": None,
     "cadence_alert_sent": False,
 }
@@ -52,8 +56,19 @@ def load_state() -> dict:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         for key, value in DEFAULT_STATE.items():
             data.setdefault(key, value)
-        return data
-    return dict(DEFAULT_STATE)
+    else:
+        data = json.loads(json.dumps(DEFAULT_STATE))
+    # Migrate the old single-page format.
+    if "status" in data:
+        data["pages"].setdefault(URLS[0], {
+            "status": data.pop("status"),
+            "redirect_detected": data.pop("redirect_detected", False),
+        })
+    for url in URLS:
+        page = data["pages"].setdefault(url, {})
+        for key, value in DEFAULT_PAGE_STATE.items():
+            page.setdefault(key, value)
+    return data
 
 
 def save_state(state: dict) -> None:
@@ -63,20 +78,20 @@ def save_state(state: dict) -> None:
     )
 
 
-def fetch_page() -> tuple[str, bool]:
+def fetch_page(url: str) -> tuple[str, bool]:
     """Return (status, redirected) for the monitored page.
 
     Adds a cache-busting query param alongside the no-cache headers so any CDN
     or proxy in front of the page can't serve a stale, previously cached copy.
     """
     cache_buster = {"_": str(int(time.time()))}
-    resp = requests.get(URL, headers=HEADERS, params=cache_buster, timeout=30, allow_redirects=True)
+    resp = requests.get(url, headers=HEADERS, params=cache_buster, timeout=30, allow_redirects=True)
     resp.raise_for_status()
 
     # Compare only scheme/host/path (ignoring query strings, including our own
     # cache-buster) so a real redirect is detected without false positives.
     final = urlsplit(resp.url)
-    original = urlsplit(URL)
+    original = urlsplit(url)
     redirected = (final.scheme, final.netloc, final.path.rstrip("/")) != (
         original.scheme,
         original.netloc,
@@ -95,9 +110,11 @@ def check_cadence(state: dict, now: datetime) -> None:
     if last_run_at is None:
         return
 
-    gap_minutes = (now - datetime.fromisoformat(last_run_at)).total_seconds() / 60
+    last = datetime.fromisoformat(last_run_at)
+    gap_minutes = (now - last).total_seconds() / 60
+    same_israel_day = last.astimezone(ISRAEL_TZ).date() == now.astimezone(ISRAEL_TZ).date()
 
-    if CADENCE_MIN_GAP_MINUTES < gap_minutes < CADENCE_MAX_GAP_MINUTES:
+    if same_israel_day and gap_minutes > CADENCE_MIN_GAP_MINUTES:
         if not state["cadence_alert_sent"]:
             send_telegram_message(
                 "⚠️ הבדיקות מאטות: עברו "
@@ -126,12 +143,18 @@ def main() -> None:
     check_cadence(state, now)
     state["last_run_at"] = now.isoformat()
 
-    try:
-        current_status, redirected = fetch_page()
-    except requests.RequestException as exc:
-        state["consecutive_failures"] += 1
-        print(f"Check failed ({state['consecutive_failures']} in a row): {exc}", file=sys.stderr)
+    statuses = {}
+    failed = []
+    for url in URLS:
+        try:
+            statuses[url] = fetch_page(url)
+        except requests.RequestException as exc:
+            print(f"Check failed for {url}: {exc}", file=sys.stderr)
+            failed.append(url)
 
+    if failed:
+        state["consecutive_failures"] += 1
+        print(f"{state['consecutive_failures']} failed run(s) in a row.", file=sys.stderr)
         if (
             state["consecutive_failures"] >= FAILURE_ALERT_THRESHOLD
             and not state["failure_alert_sent"]
@@ -139,47 +162,46 @@ def main() -> None:
             send_telegram_message(
                 "⚠️ הבדיקה של עמוד שילב נכשלה "
                 f"{state['consecutive_failures']} פעמים ברצף. "
-                "יכול להיות שהמערכת תקועה - כדאי לבדוק ידנית."
+                "יכול להיות שהמערכת תקועה - כדאי לבדוק ידנית.\n" + "\n".join(failed)
             )
             state["failure_alert_sent"] = True
+    else:
+        if state["consecutive_failures"] > 0:
+            print(f"Recovered after {state['consecutive_failures']} failed run(s).")
+        state["consecutive_failures"] = 0
+        state["failure_alert_sent"] = False
 
-        save_state(state)
-        sys.exit(1)
+    for url, (current_status, redirected) in statuses.items():
+        page = state["pages"][url]
+        previous_status = page["status"]
+        print(f"{url}: previous={previous_status} current={current_status} redirected={redirected}")
 
-    previous_status = state["status"]
-    was_redirected_before = state["redirect_detected"]
+        if redirected and not page["redirect_detected"]:
+            send_telegram_message(
+                "🚨 שינוי חשוד: הבקשה לעמוד שילב הופנתה (redirect) לכתובת אחרת! "
+                f"יכול להיות שהם הפעילו את הרכישה. {url}"
+            )
+            print("Redirect notification sent.")
+        page["redirect_detected"] = redirected
+
+        if previous_status == "closed" and current_status == "open":
+            send_telegram_message(f"🔔 העמוד של שילב נפתח להזמנה! {url}")
+            print("Telegram notification sent.")
+        page["status"] = current_status
+
     today = now.strftime("%Y-%m-%d")
-
-    print(f"previous={previous_status} current={current_status} redirected={redirected}")
-
-    # Recovered after previous failures.
-    if state["consecutive_failures"] > 0:
-        print(f"Recovered after {state['consecutive_failures']} failed check(s).")
-    state["consecutive_failures"] = 0
-    state["failure_alert_sent"] = False
-
-    if redirected and not was_redirected_before:
-        send_telegram_message(
-            "🚨 שינוי חשוד: הבקשה לעמוד שילב הופנתה (redirect) לכתובת אחרת! "
-            "יכול להיות שהם הפעילו את הרכישה. https://lp.vp4.me/jzze"
-        )
-        print("Redirect notification sent.")
-    state["redirect_detected"] = redirected
-
-    if previous_status == "closed" and current_status == "open":
-        send_telegram_message("🔔 העמוד של שילב נפתח להזמנה! https://lp.vp4.me/jzze")
-        print("Telegram notification sent.")
-    state["status"] = current_status
-
-    if state["last_heartbeat_date"] != today:
-        status_hebrew = "פתוח" if current_status == "open" else "סגור"
-        send_telegram_message(
-            f"✅ בדיקה יומית: העמוד נבדק ותקין, המצב הנוכחי: {status_hebrew}."
-        )
+    if statuses and state["last_heartbeat_date"] != today:
+        lines = [
+            f"{'פתוח' if st == 'open' else 'סגור'} - {url}"
+            for url, (st, _) in statuses.items()
+        ]
+        send_telegram_message("✅ בדיקה יומית: העמודים נבדקו ותקינים.\n" + "\n".join(lines))
         state["last_heartbeat_date"] = today
         print("Daily heartbeat sent.")
 
     save_state(state)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
