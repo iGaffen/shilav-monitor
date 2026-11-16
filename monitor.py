@@ -139,8 +139,9 @@ def check_cadence(state: dict, now: datetime) -> None:
             send_telegram_message(
                 "⚠️ הבדיקות מאטות: עברו "
                 f"{gap_minutes:.0f} דקות מאז הבדיקה הקודמת (רגיל: כל 10-15 דק'). "
-                "כנראה שהטריגר החיצוני מ-cron-job.org הפסיק לעבוד, וכרגע רצה רק "
-                "רשת הביטחון השעתית של GitHub. כדאי לבדוק את ה-cron job שם."
+                "ייתכן שריצה נתקעה זמנית אצל GitHub (בדרך כלל מסתדר לבד), "
+                "או שהטריגר מ-cron-job.org הפסיק לעבוד. כדאי לבדוק בלשונית Actions "
+                "ב-GitHub: אם יש ריצה חדשה כל 15 דק', הטריגר תקין."
             )
             state["cadence_alert_sent"] = True
             print(f"Cadence alert sent (gap={gap_minutes:.0f} min).")
